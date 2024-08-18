@@ -1,0 +1,112 @@
+import numpy as np # type: ignore
+from skimage import io, img_as_float, filters
+from scipy.ndimage import gaussian_filter
+from scipy.optimize import curve_fit
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.pyplot as plt
+
+def fractal_dimension(Z, blur_radius=1.0):
+    Z = gaussian_filter(Z, sigma=blur_radius)
+    threshold = filters.threshold_otsu(Z)
+    Z = (Z < threshold) * 1
+
+    p = min(Z.shape)
+    n = 2**np.floor(np.log(p)/np.log(2))
+    n = int(np.log(n)/np.log(2))
+    sizes = 2**np.arange(n, 1, -1)
+
+    counts = []
+    for size in sizes:
+        count = 0
+        for i in range(0, Z.shape[0], size):
+            for j in range(0, Z.shape[1], size):
+                if np.sum(Z[i:i+size, j:j+size]) > 0:
+                    count += 1
+        counts.append(count)
+
+    log_sizes = np.log(sizes)
+    log_counts = np.log(counts)
+    params, covariance = curve_fit(lambda x, a, b: a * x + b, log_sizes, log_counts)
+    hurst = 2 + params[0]  # Calculate Hurst exponent as D = 2 - H
+    hurst_error = np.sqrt(np.diag(covariance))[0]  # Error in Hurst exponent
+    return -params[0], log_sizes, log_counts, params, hurst, hurst_error
+
+def calculate_fractal_dimension_with_bootstrapping(log_sizes, log_counts, n_bootstrap=1000):
+    bootstrap_estimates = []
+    for _ in range(n_bootstrap):
+        indices = np.random.choice(len(log_counts), len(log_counts), replace=True)
+        sample_log_sizes = log_sizes[indices]
+        sample_log_counts = log_counts[indices]
+        params, _ = curve_fit(lambda x, a, b: a * x + b, sample_log_sizes, sample_log_counts)
+        bootstrap_estimates.append(-params[0])
+    bootstrap_estimates = np.array(bootstrap_estimates)
+    se = np.std(bootstrap_estimates)
+    ci = np.percentile(bootstrap_estimates, [2.5, 97.5])
+    return np.mean(bootstrap_estimates), se, ci
+
+def calculate_box_counting_dimension(image_path):
+    image = io.imread(image_path, as_gray=True)
+    image = img_as_float(image)
+    fd, log_sizes, log_counts, params, hurst, hurst_error = fractal_dimension(image)
+    fd_bootstrap, se, ci = calculate_fractal_dimension_with_bootstrapping(log_sizes, log_counts)
+    blurred = gaussian_filter(image, sigma=1.0)
+    threshold = filters.threshold_otsu(blurred)
+    thresholded = (blurred < threshold) * 1
+    return fd_bootstrap, se, ci, hurst, hurst_error, image, blurred, thresholded, log_sizes, log_counts, params
+
+def plot_results(image, blurred, thresholded, fd, se, ci, hurst, hurst_error, log_sizes, log_counts, params):
+    fig, axs = plt.subplots(2, 3, figsize=(18, 12))
+    fig.suptitle(f'Fractal Dimension: {fd:.3f} ± {se:.3f} (95% CI: {ci[0]:.3f}-{ci[1]:.3f}), Hurst: {hurst:.3f} ± {hurst_error:.3f}', fontsize=16)
+
+    axs[0, 0].imshow(image, cmap='gray')
+    axs[0, 0].set_title('Original Image')
+    axs[0, 0].axis('off')
+
+    axs[0, 1].imshow(blurred, cmap='gray')
+    axs[0, 1].set_title('Blurred Image')
+    axs[0, 1].axis('off')
+
+    axs[0, 2].imshow(thresholded, cmap='gray')
+    axs[0, 2].set_title('Thresholded Image')
+    axs[0, 2].axis('off')
+
+    axs[1, 0].plot(log_sizes, log_counts, 'bo', label='Data')
+    axs[1, 0].plot(log_sizes, params[0]*log_sizes + params[1], 'r-', label=f'Fit: slope={params[0]:.3f}')
+    axs[1, 0].set_title('Log-Log Plot of Box Counting')
+    axs[1, 0].set_xlabel('Log Size')
+    axs[1, 0].set_ylabel('Log Count')
+    axs[1, 0].legend()
+
+    axs[1, 1].text(0.5, 0.5, f'Fractal Dimension: {fd:.3f}\n95% CI: {ci[0]:.3f} - {ci[1]:.3f}\nHurst Exponent: {hurst:.3f}\nError in Hurst: {hurst_error:.3f}', horizontalalignment='center', verticalalignment='center', transform=axs[1, 1].transAxes)
+    axs[1, 1].axis('off')
+
+    axs[1, 2].axis('off')  # Optionally, use this space for additional visualizations or leave it blank.
+
+    return fig
+
+def open_file_dialog():
+    file_path = filedialog.askopenfilename()
+    if file_path:
+        try:
+            fd, se, ci, hurst, hurst_error, original_image, blurred_image, thresholded_image, log_sizes, log_counts, params = calculate_box_counting_dimension(file_path)
+            fig = plot_results(original_image, blurred_image, thresholded_image, fd, se, ci, hurst, hurst_error, log_sizes, log_counts, params)
+            canvas = FigureCanvasTkAgg(fig, master=root)
+            canvas.draw()
+            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+root = tk.Tk()
+root.title("Fractal Dimension Calculator")
+root.geometry("1200x800")
+
+top_frame = tk.Frame(root)
+top_frame.pack(side=tk.TOP, fill=tk.X, pady=10)
+
+open_button = tk.Button(top_frame, text="Open Image", command=open_file_dialog)
+open_button.pack(side=tk.LEFT, padx=10)
+
+root.mainloop()
